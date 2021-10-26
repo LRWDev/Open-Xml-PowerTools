@@ -9,7 +9,7 @@ using System.Xml.XPath;
 
 namespace OpenXmlPowerTools
 {
-    public class DocumentAssemblerXElement: DocumentAssembler<XElement>
+    public class XmlDocumentAssembler: DocumentAssembler<XElement>
     {
         protected override string EvaluateExpression(object data, string xPath, bool optional)
         {
