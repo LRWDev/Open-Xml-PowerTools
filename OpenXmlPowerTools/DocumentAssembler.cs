@@ -1,30 +1,27 @@
 ﻿// Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
+using DocumentFormat.OpenXml.Packaging;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
-using System.Xml.XPath;
 using System.Xml.Schema;
-using DocumentFormat.OpenXml.Office.CustomUI;
-using DocumentFormat.OpenXml.Packaging;
-using OpenXmlPowerTools;
-using System.Collections;
+using System.Xml.XPath;
 
 namespace OpenXmlPowerTools
 {
-    public abstract class DocumentAssembler<T>
-        where T: class
+    public abstract class DocumentAssemblerBase<T>
+        where T : class
     {
         protected abstract string EvaluateExpression(object data, string expression, bool optional);
+        protected virtual XElement SelectTemplate(object data, string expression) { return null; }
 
         protected abstract IEnumerable<object> SelectElements(object data, string expression);
-        public WmlDocument AssembleDocument(WmlDocument templateDoc, T data, out bool templateError)
+        protected WmlDocument AssembleDocumentInternal(WmlDocument templateDoc, T data, out bool templateError)
         {
             byte[] byteArray = templateDoc.DocumentByteArray;
             using (MemoryStream mem = new MemoryStream())
@@ -51,18 +48,26 @@ namespace OpenXmlPowerTools
         {
             XDocument xDoc = part.GetXDocument();
 
-            var xDocRoot = RemoveGoBackBookmarks(xDoc.Root);
+            var xDocRoot = ProcessDocumentElement(xDoc.Root, data, te);
+
+            xDoc.Elements().First().ReplaceWith(xDocRoot);
+            part.PutXDocument();
+        }
+
+        private XElement ProcessDocumentElement(XElement root, object data, TemplateError te)
+        {
+            var xDocRoot = RemoveGoBackBookmarks(root);
 
             // content controls in cells can surround the W.tc element, so transform so that such content controls are within the cell content
-            xDocRoot = (XElement)NormalizeContentControlsInCells(xDocRoot);
+            xDocRoot = (XElement) NormalizeContentControlsInCells(xDocRoot);
 
-            xDocRoot = (XElement)TransformToMetadata(xDocRoot, data, te);
+            xDocRoot = (XElement) TransformToMetadata(xDocRoot, data, te);
 
             // Table might have been placed at run-level, when it should be at block-level, so fix this.
             // Repeat, EndRepeat, Conditional, EndConditional are allowed at run level, but only if there is a matching pair
             // if there is only one Repeat, EndRepeat, Conditional, EndConditional, then move to block level.
             // if there is a matching pair, then is OK.
-            xDocRoot = (XElement)ForceBlockLevelAsAppropriate(xDocRoot, te);
+            xDocRoot = (XElement) ForceBlockLevelAsAppropriate(xDocRoot, te);
 
             NormalizeTablesRepeatAndConditional(xDocRoot, te);
 
@@ -70,14 +75,11 @@ namespace OpenXmlPowerTools
             ProcessOrphanEndRepeatEndConditional(xDocRoot, te);
 
             // do the actual content replacement
-            xDocRoot = (XElement)ContentReplacementTransform(xDocRoot, data, te);
-
-            xDoc.Elements().First().ReplaceWith(xDocRoot);
-            part.PutXDocument();
-            return;
+            xDocRoot = (XElement) ContentReplacementTransform(xDocRoot, data, te);
+            return xDocRoot;
         }
 
-        private static XName[] s_MetaToForceToBlock = new XName[] {
+        private static XName[] s_MetaToForceToBlock = {
             PA.Conditional,
             PA.EndConditional,
             PA.Repeat,
@@ -290,7 +292,7 @@ namespace OpenXmlPowerTools
             "EndConditional",
         };
 
-        private static object TransformToMetadata(XNode node, T data, TemplateError te)
+        private static object TransformToMetadata(XNode node, object data, TemplateError te)
         {
             XElement element = node as XElement;
             if (element != null)
@@ -474,6 +476,19 @@ namespace OpenXmlPowerTools
                         }
                     },
                     {
+                        PA.Template,
+                        new PASchemaSet() {
+                            XsdMarkup =
+                                @"<xs:schema attributeFormDefault='unqualified' elementFormDefault='qualified' xmlns:xs='http://www.w3.org/2001/XMLSchema'>
+                                  <xs:element name='Template'>
+                                    <xs:complexType>
+                                      <xs:attribute name='Select' type='xs:string' use='required' />
+                                    </xs:complexType>
+                                  </xs:element>
+                                </xs:schema>",
+                        }
+                    },
+                    {
                         PA.Table,
                         new PASchemaSet() {
                             XsdMarkup =
@@ -573,6 +588,7 @@ namespace OpenXmlPowerTools
             public static XName Match = "Match";
             public static XName NotMatch = "NotMatch";
             public static XName Depth = "Depth";
+            public static XName Template = "Template";
         }
 
         private class PASchemaSet
@@ -598,8 +614,8 @@ namespace OpenXmlPowerTools
                     XElement para = element.Descendants(W.p).FirstOrDefault();
                     XElement run = element.Descendants(W.r).FirstOrDefault();
 
-                    var xPath = (string) element.Attribute(PA.Select);
-                    var optionalString = (string) element.Attribute(PA.Optional);
+                    var xPath = (string)element.Attribute(PA.Select);
+                    var optionalString = (string)element.Attribute(PA.Optional);
                     bool optional = (optionalString != null && optionalString.ToLower() == "true");
 
                     string newValue;
@@ -616,7 +632,7 @@ namespace OpenXmlPowerTools
                     {
 
                         XElement p = new XElement(W.p, para.Elements(W.pPr));
-                        foreach(string line in newValue.Split('\n'))
+                        foreach (string line in newValue.Split('\n'))
                         {
                             p.Add(new XElement(W.r,
                                     para.Elements(W.r).Elements(W.rPr).FirstOrDefault(),
@@ -628,7 +644,7 @@ namespace OpenXmlPowerTools
                     else
                     {
                         List<XElement> list = new List<XElement>();
-                        foreach(string line in newValue.Split('\n'))
+                        foreach (string line in newValue.Split('\n'))
                         {
                             list.Add(new XElement(W.r,
                                 run.Elements().Where(e => e.Name != W.t),
@@ -637,6 +653,30 @@ namespace OpenXmlPowerTools
                         }
                         return list;
                     }
+                }
+                if (element.Name == PA.Template)
+                {
+                    var xPath = (string)element.Attribute(PA.Select);
+                    XElement run = element.Descendants(W.r).FirstOrDefault();
+                    XElement newValue;
+                    try
+                    {
+                        newValue = SelectTemplate(data, xPath);
+                    }
+                    catch (XPathException e)
+                    {
+                        return CreateContextErrorMessage(element, "XPathException: " + e.Message, templateError);
+                    }
+
+                    var list = new List<XElement>();
+
+                    // TODO: Cache processed templates. (Processing includes metadata transformations)
+                    var newValueProcessed = ProcessDocumentElement(newValue, data, templateError);
+                    list.Add(new XElement(W.r,
+                        run.Elements().Where(e => e.Name != W.t),
+                        new XElement(W.t, newValueProcessed)));
+
+                    return list;
                 }
                 if (element.Name == PA.Repeat)
                 {
@@ -653,7 +693,7 @@ namespace OpenXmlPowerTools
                     {
                         return CreateContextErrorMessage(element, "XPathException: " + e.Message, templateError);
                     }
-                    if (!repeatingData.Any())
+                    if (repeatingData == null || !repeatingData.Any())
                     {
                         if (optional)
                         {
@@ -754,17 +794,17 @@ namespace OpenXmlPowerTools
                     if (match != null && notMatch != null)
                         return CreateContextErrorMessage(element, "Conditional: Cannot specify both Match and NotMatch", templateError);
 
-                    string testValue = null; 
-                   
+                    string testValue = null;
+
                     try
                     {
                         testValue = EvaluateExpression(data, xPath, false);
                     }
-	                catch (XPathException e)
+                    catch (XPathException e)
                     {
                         return CreateContextErrorMessage(element, e.Message, templateError);
                     }
-                  
+
                     if ((match != null && testValue == match) || (notMatch != null && testValue != notMatch))
                     {
                         var content = element.Elements().Select(e => ContentReplacementTransform(e, data, templateError));

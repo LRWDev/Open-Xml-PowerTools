@@ -4,12 +4,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Xml;
 using System.Xml.Linq;
 using System.Xml.XPath;
 
 namespace OpenXmlPowerTools
 {
-    public class XmlDocumentAssembler: DocumentAssembler<XElement>
+    public class DocumentAssembler: DocumentAssemblerBase<XElement>
     {
         protected override string EvaluateExpression(object data, string xPath, bool optional)
         {
@@ -55,6 +56,19 @@ namespace OpenXmlPowerTools
         {
             var element = (XElement)data;
             return element.XPathSelectElements(expression);
+        }
+
+        public static WmlDocument AssembleDocument(WmlDocument templateDoc, XElement data, out bool templateError)
+        {
+            var docAsm = new DocumentAssembler();
+            return docAsm.AssembleDocumentInternal(templateDoc, data, out templateError);
+        }
+
+        public static WmlDocument AssembleDocument(WmlDocument templateDoc, XmlDocument data, out bool templateError)
+        {
+            var xDoc = data.GetXDocument();
+            var docAsm = new DocumentAssembler();
+            return docAsm.AssembleDocumentInternal(templateDoc, xDoc.Root, out templateError);
         }
     }
 }
